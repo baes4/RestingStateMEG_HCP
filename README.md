@@ -6,7 +6,7 @@ We describe groups of similar dynamical systems of human brain resting states fr
 ### Interactive Notebook
 The code can be run online using Binder. Feel free to change the paramaters of the code and edit the Jupyter notebook
 
-[![Binder](https://mybinder.org/badge.svg)](https://gke.mybinder.org/)
+[![Binder](https://mybinder.org/v2/gh/baes4/RestingStateMEG_HCP/master)
 
 
 
