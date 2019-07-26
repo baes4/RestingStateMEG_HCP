@@ -5,6 +5,7 @@ from copy import copy
 import matplotlib.pyplot as plt
 import scipy as sp
 import scipy.optimize as spo
+from scipy.special import erf as sperf
 from sklearn.linear_model import ElasticNet
 import numpy.linalg as npl
 import numpy.random as npr
@@ -112,9 +113,9 @@ def odd_power(h,power=3):
 #Now add in a bias
 def simulate(size,time_steps,w = 0.0,sigma = 1.0,coupling = 1.0,rho = 0.2,power=1,delta = 1,bias=0):
     if npl.norm(w)==0.:
-        sigma = (npr.rand(1,size)+1)/2.0        
+        sigma = (npr.rand(1,size)+1)/2.0
         if power<3: delta = (npr.rand(1,size)+1)*4
-        else: delta = odd_power(npr.rand(1,size)+1,power)        
+        else: delta = odd_power(npr.rand(1,size)+1,power)
         bias = (npr.rand(1,size)-0.5)*2
         w = npr.rand(size,size) - 0.5
         w = coupling*w - rho*np.eye(size)
@@ -131,17 +132,22 @@ def simulate(size,time_steps,w = 0.0,sigma = 1.0,coupling = 1.0,rho = 0.2,power=
     if power<3:
         return x,y_max[:,None]*w,sigma/y_max[None,:],bias
     else:
-        opd = odd_power(delta,1/power)
-        return x,opd[0][None,:]*w,sigma,opd*bias
+        if not np.isscalar(delta):
+            opd = odd_power(delta,1/power)
+            return x,opd[0][None,:]*w,sigma,opd*bias
+        else:
+            return x,w,sigma,bias
 
 def bias_update(y,h,b_in,pp):
-    y_plus = y>0
+    y_median = np.median(y)
+    y_plus = y>y_median
     if pp==1:
         def f0(bias):
             return np.mean(y[y_plus]-np.tanh(bias+h[y_plus]))**2 + np.mean(y[~y_plus]-np.tanh(bias+h[~y_plus]))**2
     else:
         def f0(bias):
-            return np.mean(y[y_plus]-odd_power(bias + h[y_plus],pp))**2 + np.mean(y[~y_plus]-odd_power(bias + h[~y_plus],pp))**2
+            return np.mean(y[y_plus]-odd_power(bias + h[y_plus],pp))**2 + \
+                np.mean(y[~y_plus]-odd_power(bias + h[~y_plus],pp))**2
     res = spo.minimize(f0,b_in)
     return res.x
 
@@ -177,18 +183,18 @@ def infer(x,max_iter = 100,tol=1e-8,func=npl.solve,window=1,power=1,verbose=Fals
                 ratio = np.sqrt(np.pi/2.0)*np.ones((time_steps-1))
             else:
                 ratio = np.sqrt(np.pi/2.0)*np.ones((time_steps-1))*h[:,index]**(power-1)
-            ratio[~zeros] = (bias[0,index] + x0[~zeros,:].dot(w[:,index]))/sp.special.erf(h[~zeros,index]*root2over)
+            ratio[~zeros] = (bias[0,index] + x0[~zeros,:].dot(w[:,index]))/sperf(h[~zeros,index]*root2over)
             w[:,index] = func(c+0.1*np.eye(size),np.mean((x0-np.mean(x0,axis=0)[None,:])*(s[:,index]*ratio)[:,np.newaxis],axis=0))
             h_temp = x0.dot(w[:,index])
             bias[0,index] = bias_update(y[:,index],h_temp,bias[0,index],pp=power)
             err_old = error
             if power<3:
                 h[:,index] = np.tanh(bias[0,index] + h_temp)
-                error = npl.norm(s[:,index]-sp.special.erf(h[:,index]*root2over)/erf_max)
+                error = npl.norm(s[:,index]-sperf(h[:,index]*root2over)/erf_max)
             else:
                 h[:,index] = odd_power(bias[0,index] + h_temp,power)
-                error = npl.norm(s[:,index]-sp.special.erf(h[:,index]*root2over))
-#             print(counter,error)
+                error = npl.norm(s[:,index]-sperf(h[:,index]*root2over))
+    #             print(counter,error)
     sigma = find_sigma(y,h)*np.sqrt(window)#*y_max[None,:]
     return w,sigma,bias
 
@@ -202,33 +208,37 @@ def pca_combine_datasets(streamlined_dataset):
             pca_combined_dataset = np.concatenate((pca_combined_dataset, x), axis=1 )
     return pca_combined_dataset
 
-def calculate_allW(dataset):
+def calculate_allW(dataset, given_power):
     allwmatrices = {}
     allsigs = {}
     allbiases = {}
     for patient in dataset:
-        w, sig, bias = infer(dataset[patient].transpose(), power=3)
+        w, sig, bias = infer(dataset[patient].transpose(), power=given_power)
         allwmatrices[patient] = w
         allsigs[patient] = sig
         allbiases[patient] = bias
     return allwmatrices, allsigs, allbiases
 
-def calculate_allTimeCov(allwmatrices, time_shift):
+def calculate_allTimeCov(dataset, time_shift):
     alltimeshiftcov = {}
-    for patient in allwmatrices:
-        timeshiftcovmatrix = time_shift_cov(allwmatrices[patient], shift=time_shift)
+    for patient in dataset:
+        timeshiftcovmatrix = time_shift_cov(dataset[patient].transpose(), shift=time_shift)
         alltimeshiftcov[patient] = timeshiftcovmatrix
     return alltimeshiftcov
 
-def hcp_inference(dataset_ids, pca_components, time_shift):
+def hcp_inference(dataset_ids, pca_components, time_shift, power):
+    print("Running Newest Non-Linear Inference (Updated) with:")
+    print("1. PCA components =", pca_components)
+    print("2. Time shifts =", time_shift)
+    print("3. Power =", power)
     sensor_matrix, separated_dataset, all_data_labels, labels_dict = load_sensor_matrix(dataset_ids)
-    common_labels_set = common_labels(labels_dict)
-    streamlined_dataset = form_dataset(common_labels_set, separated_dataset, labels_dict)
+    common_labels_set = common_labels(labels_dict.copy())
+    streamlined_dataset = form_dataset(common_labels_set.copy(), separated_dataset.copy(), labels_dict.copy())
     normalized_streamlined_dataset = {}
     for patient in streamlined_dataset:
         normalized_streamlined_dataset[patient] = standardize(streamlined_dataset[patient])
     pca_data_dict = {}
-    pca_combined_dataset = pca_combine_datasets(normalized_streamlined_dataset)
+    pca_combined_dataset = pca_combine_datasets(normalized_streamlined_dataset.copy())
     pca = PCA(n_components=pca_components)
     pca.fit(pca_combined_dataset.T)
     transformed_data = pca.fit_transform(pca_combined_dataset.T)
@@ -236,6 +246,6 @@ def hcp_inference(dataset_ids, pca_components, time_shift):
     for patient in normalized_streamlined_dataset:
         pca_data_dict[patient] = transformed_data[counter*1018:1018*(counter+1), :].T
         counter = counter + 1
-    allwmatrices, allsigs, allbiases = calculate_allW(pca_data_dict)
-#     alltimeshiftcov = calculate_allTimeCov(allwmatrices, time_shift)
-    return allwmatrices, allsigs, allbiases, pca_data_dict
+    allwmatrices, allsigs, allbiases = calculate_allW(pca_data_dict, power)
+    alltscmatrices = calculate_allTimeCov(pca_data_dict, time_shift)
+    return allwmatrices, alltscmatrices, allsigs, allbiases, pca_data_dict
